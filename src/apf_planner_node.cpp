@@ -2,11 +2,14 @@
 #include <rclcpp/rclcpp.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <nav_msgs/msg/path.hpp>
+#include <nav_msgs/msg/odometry.hpp>
 #include <geometry_msgs/msg/pose_stamped.hpp>
 #include <geometry_msgs/msg/pose_with_covariance_stamped.hpp>
 #include <visualization_msgs/msg/marker.hpp>
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <tf2/LinearMath/Quaternion.h>
+#include <tf2_ros/transform_listener.h>
+#include <tf2_ros/buffer.h>
 #include <memory>
 
 namespace apf_path_planner {
@@ -19,8 +22,15 @@ public:
     this->declare_parameter("radius", 10.0);
     this->declare_parameter("forcemap_width", 10);
     this->declare_parameter("forcemap_height", 10);
+    this->declare_parameter("pose_source", "tf");
+    this->declare_parameter("robot_frame_id", "base_link");
+    this->declare_parameter("map_frame_id", "map");
+    this->declare_parameter("odom_topic", "/odom");
 
     updateParameters();
+
+    tf_buffer_ = std::make_shared<tf2_ros::Buffer>(this->get_clock());
+    tf_listener_ = std::make_shared<tf2_ros::TransformListener>(*tf_buffer_);
 
     path_publisher_ = this->create_publisher<nav_msgs::msg::Path>(
       "/path", 10
@@ -35,11 +45,6 @@ public:
       std::bind(&APFPlannerNode::mapCallback, this, std::placeholders::_1)
     );
 
-    initial_pose_subscription_ = this->create_subscription<geometry_msgs::msg::PoseWithCovarianceStamped>(
-      "/initialpose", 10,
-      std::bind(&APFPlannerNode::initialPoseCallback, this, std::placeholders::_1)
-    );
-
     goal_pose_subscription_ = this->create_subscription<geometry_msgs::msg::PoseStamped>(
       "/goal_pose", 10,
       std::bind(&APFPlannerNode::goalPoseCallback, this, std::placeholders::_1)
@@ -48,6 +53,8 @@ public:
     parameter_callback_handle_ = this->add_on_set_parameters_callback(
       std::bind(&APFPlannerNode::parametersCallback, this, std::placeholders::_1)
     );
+
+    setupPoseSource();
   }
 
 private:
@@ -69,18 +76,58 @@ private:
     return result;
   }
 
+  void setupPoseSource() {
+    std::string pose_source = this->get_parameter("pose_source").as_string();
+
+    if (pose_source == "odom") {
+      std::string odom_topic = this->get_parameter("odom_topic").as_string();
+      odom_subscription_ = this->create_subscription<nav_msgs::msg::Odometry>(
+        odom_topic, 10,
+        std::bind(&APFPlannerNode::odomCallback, this, std::placeholders::_1)
+      );
+    }
+  }
+
+  Vector2D getCurrentPose() {
+    std::string pose_source = this->get_parameter("pose_source").as_string();
+
+    if (pose_source == "tf") {
+      return getCurrentPoseFromTF();
+    } else if (pose_source == "odom") {
+      return current_pose_from_odom_;
+    }
+
+    return Vector2D(0.0, 0.0);
+  }
+
+  Vector2D getCurrentPoseFromTF() {
+    std::string robot_frame = this->get_parameter("robot_frame_id").as_string();
+    std::string map_frame = this->get_parameter("map_frame_id").as_string();
+
+    try {
+      auto transform = tf_buffer_->lookupTransform(
+        map_frame, robot_frame, tf2::TimePointZero
+      );
+
+      return Vector2D(
+        transform.transform.translation.x,
+        transform.transform.translation.y
+      );
+    } catch (const tf2::TransformException& ex) {
+      RCLCPP_WARN(this->get_logger(), "Could not get transform: %s", ex.what());
+      return Vector2D(0.0, 0.0);
+    }
+  }
+
   void mapCallback(const nav_msgs::msg::OccupancyGrid::SharedPtr msg) {
     apf_planner_.setMap(*msg);
   }
 
-  void initialPoseCallback(
-    const geometry_msgs::msg::PoseWithCovarianceStamped::SharedPtr msg
-  ) {
-    Vector2D current_position(
+  void odomCallback(const nav_msgs::msg::Odometry::SharedPtr msg) {
+    current_pose_from_odom_ = Vector2D(
       msg->pose.pose.position.x,
       msg->pose.pose.position.y
     );
-    apf_planner_.setCurrentPose(current_position);
   }
 
   void goalPoseCallback(const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
@@ -88,6 +135,9 @@ private:
       msg->pose.position.x,
       msg->pose.position.y
     );
+
+    Vector2D current_pose = getCurrentPose();
+    apf_planner_.setCurrentPose(current_pose);
 
     std::vector<Vector2D> path_vector = apf_planner_.plan(goal_position);
 
@@ -173,8 +223,13 @@ private:
   rclcpp::Publisher<visualization_msgs::msg::MarkerArray>::SharedPtr marker_publisher_;
 
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr map_subscription_;
-  rclcpp::Subscription<geometry_msgs::msg::PoseWithCovarianceStamped>::SharedPtr initial_pose_subscription_;
+  rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr odom_subscription_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr goal_pose_subscription_;
+
+  std::shared_ptr<tf2_ros::Buffer> tf_buffer_;
+  std::shared_ptr<tf2_ros::TransformListener> tf_listener_;
+
+  Vector2D current_pose_from_odom_;
 
   OnSetParametersCallbackHandle::SharedPtr parameter_callback_handle_;
 };

@@ -11,6 +11,7 @@ find_package(nav_msgs REQUIRED)
 find_package(geometry_msgs REQUIRED)
 find_package(visualization_msgs REQUIRED)
 find_package(tf2 REQUIRED)
+find_package(tf2_ros REQUIRED)
 
 include_directories(
   include
@@ -26,6 +27,7 @@ ament_target_dependencies(${PROJECT_NAME}_lib
   geometry_msgs
   visualization_msgs
   tf2
+  tf2_ros
 )
 
 add_executable(${PROJECT_NAME}_node
@@ -42,6 +44,7 @@ ament_target_dependencies(${PROJECT_NAME}_node
   geometry_msgs
   visualization_msgs
   tf2
+  tf2_ros
 )
 
 install(TARGETS
